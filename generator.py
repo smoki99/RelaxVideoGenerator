@@ -110,62 +110,71 @@ def create_audio_track(sounds_dir, output_format="mp3"):
 
     return combined_audio, song_titles, output_audio_path
 
-def create_video_track(clips_dir, song_titles, fontname="OCR A Std", fontsize=36):
+def create_video_track(clips_dir, combined_audio_duration_ms, song_titles, fontname="OCR A Std", fontsize=36):
     """
-    Creates a video track from video clips in a directory, with soft aperture transitions
-    and song titles overlaid.
-
-    Args:
-        clips_dir (str): Path to the directory containing video clips.
-        song_titles (list): List of song titles to display.
-        fontname (str): Font name for song titles.
-        fontsize (int): Font size for song titles.
-
-    Returns:
-        VideoFileClip: Concatenated video clip.
+    Creates a video track, looping clips randomly until the audio duration is reached.
     """
     logging.info(f"Starting video track generation from directory: '{clips_dir}'")
-    clip_files = [f for f in os.listdir(clips_dir) if f.lower().endswith((".mp4", ".mov", ".avi", ".mkv"))] # Add more formats if needed
+    clip_files = [f for f in os.listdir(clips_dir) if f.lower().endswith((".mp4", ".mov", ".avi", ".mkv"))]
     if not clip_files:
-        error_msg = f"No video files found in '{clips_dir}'."
-        logging.error(error_msg)
-        raise ValueError(error_msg)
+        raise ValueError(f"No video files found in '{clips_dir}'.")
 
     video_clips = []
-    transition_duration = 1.5 # seconds for soft aperture transition
+    transition_duration = 1.5  # seconds for soft aperture transition
+    total_video_duration_ms = 0
+    clip_index = 0  # To cycle through song titles
 
-    for i, song_title in enumerate(song_titles):
-        clip_file = random.choice(clip_files) # Allow duplicates
-        logging.debug(f"Choosing video clip '{clip_file}' for song: '{song_title}'")
+    while total_video_duration_ms < combined_audio_duration_ms:
+        clip_file = random.choice(clip_files)
+        current_song_title = song_titles[clip_index % len(song_titles)] if song_titles else " "
+        logging.debug(f"Choosing video clip '{clip_file}' for segment starting at {total_video_duration_ms/1000:.2f}s, song title: '{current_song_title}'")
+
         try:
             video_clip = VideoFileClip(os.path.join(clips_dir, clip_file))
             logging.debug(f"Loaded video clip: '{clip_file}', duration: {video_clip.duration:.2f} seconds.")
 
-            # Soft Aperture (Crossfade) Transition
-            if video_clips: # If not the first clip, add transition
-                logging.debug("Adding soft aperture transition.")
-                video_clips[-1] = CompositeVideoClip([video_clips[-1].fx(vfx.fadeout, transition_duration),
-                                                       video_clip.fx(vfx.fadein, transition_duration)])
+            # --- IMPORTANT CHANGES START HERE ---
 
-            # Song Title TextClip
-            text_clip = TextClip(song_title, fontsize=fontsize, font=fontname, color='white', align='center')
-            text_clip = text_clip.set_duration(video_clip.duration).set_position(('center', 'bottom')).margin(bottom=20, opacity=0) # Margin for better visibility
-            logging.debug(f"Created text clip for song title: '{song_title}'.")
+            # Create the text clip for the current video clip
+            text_clip = TextClip(current_song_title, fontsize=fontsize, font=fontname, color='white', align='center')
+            text_clip = text_clip.set_duration(video_clip.duration).set_position(('center', 'bottom')).margin(bottom=20, opacity=0)
 
-            video_clip = CompositeVideoClip([video_clip, text_clip])
-            video_clips.append(video_clip)
-            logging.debug("Added video clip to the sequence.")
+            # Apply fade-in to the current video clip
+            video_clip = video_clip.fx(vfx.fadein, transition_duration)
+
+            # Composite the current video clip with the text clip
+            video_clip_with_text = CompositeVideoClip([video_clip, text_clip])
+
+            # Handle transitions and appending
+            if video_clips:  # If it's NOT the first clip
+                # Apply fade-out to the LAST clip in the list
+                last_clip = video_clips[-1].fx(vfx.fadeout, transition_duration)
+                video_clips[-1] = last_clip  # Replace the last clip with its faded-out version
+
+                # Append the current clip (already faded-in)
+                video_clips.append(video_clip_with_text)
+            else:
+                # If it's the FIRST clip, just append it (it's already faded in)
+                video_clips.append(video_clip_with_text)
+
+            # --- IMPORTANT CHANGES END HERE ---
+
+            total_video_duration_ms += int(video_clip.duration * 1000)  # Use .duration and convert to milliseconds
+            clip_index += 1  # Move to the next song title
+            logging.debug(f"Added video clip segment. Total video duration: {total_video_duration_ms/1000:.2f} seconds.")
 
         except Exception as e:
             error_msg = f"Error loading or processing video clip '{clip_file}': {e}"
             logging.error(error_msg)
+            if video_clips:
+                continue
+            else:
+                raise ValueError("Failed to load any video clips.") from e
 
     if not video_clips:
-        error_msg = "No video clips were successfully loaded."
-        logging.error(error_msg)
-        raise ValueError(error_msg)
+        raise ValueError("No video clips were successfully loaded.")
 
-    final_video = concatenate_videoclips(video_clips) # intercut=False removed for transitions to work as expected
+    final_video = concatenate_videoclips(video_clips)
     logging.info("Video track generation complete.")
     return final_video
 
@@ -194,8 +203,11 @@ def generate_music_video(sounds_dir, clips_dir, output_filename="music_video.mp4
 
     logging.info("Audio track generated successfully.")
 
+    combined_audio_duration_ms = len(combined_audio) # Get duration in milliseconds as integer
+    print("DEBUG: Audio duration in ms:", combined_audio_duration_ms) # Debug print
+
     try:
-        final_video = create_video_track(clips_dir, song_titles, font, fontsize)
+        final_video = create_video_track(clips_dir, combined_audio_duration_ms, song_titles, font, fontsize)
     except ValueError as e:
         logging.error(f"Error during video track generation: {e}")
         os.remove(audio_path) # Clean up audio file if video fails
